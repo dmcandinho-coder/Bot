@@ -1,98 +1,98 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
-const express = require('express');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const path = require('path');
+const fs = require('fs');
 
-const app = express();
-const port = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-    res.send('Bot do Daniel Moreira Candinho está online no Render! 🤖');
+// Configuração do cliente com opções reforçadas para evitar travamentos/inatividade
+const client = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ]
+    }
 });
-app.listen(port, () => console.log(`Servidor rodando na porta \${port}`));
 
-async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_baileys');
-    
-    const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true,
-        browser: ['Bot Daniel', 'Chrome', '1.0.0']
-    });
+// Gera o QR Code no terminal
+client.on('qr', (qr) => {
+    console.log('Escaneie o QR Code abaixo com o seu WhatsApp:');
+    qrcode.generate(qr, { small: true });
+});
 
-    sock.ev.on('creds.update', saveCreds);
+// Confirmação de conexão
+client.on('ready', () => {
+    console.log('========================================');
+    console.log('>>> BOT ATIVO E PRONTO PARA USO! <<<');
+    console.log('========================================');
+});
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
-        if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error instanceof Boom) ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut : true;
-            console.log('Conexão fechada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) connectToWhatsApp();
-        } else if (connection === 'open') {
-            console.log('✅ Tudo pronto! Bot do Daniel conectado com sucesso.');
-        }
-    });
+// Tratamento para evitar que o bot "durma" se a conexão cair
+client.on('disconnected', (reason) => {
+    console.log('Bot foi desconectado:', reason);
+    console.log('Tentando reconectar...');
+    client.initialize();
+});
 
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages;
-        if (!msg.key.fromMe && m.type === 'notify') {
-            const from = msg.key.remoteJid;
-            const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
-            
-            if (!text) return;
-            const input = text.trim();
-            const inputLower = input.toLowerCase();
+// Escuta e processa todas as mensagens recebidas/enviadas
+client.on('message_create', async (msg) => {
+    // Ignora mensagens de grupos para evitar respostas indesejadas
+    if (msg.from.endsWith('@g.us')) return;
 
-            // 1. FUNÇÃO DE LEMBRETE (!lembrar 1 teste)
-            if (inputLower.startsWith('!lembrar')) {
-                const partes = input.split(' ');
-                const minutos = parseInt(partes[1]);
-                const tarefa = partes.slice(2).join(' ');
+    const texto = msg.body.trim().toLowerCase();
 
-                if (isNaN(minutos) || !tarefa) {
-                    await sock.sendMessage(from, { text: `⚠️ *Como usar o lembrete:* \nDigite exatamente:\n\`!lembrar [minutos] [sua tarefa]\`\n\n*Exemplo:* \`!lembrar 5 Tomar café\`` });
-                    return;
-                }
+    // Menu Principal (Acionado por oi, ola, menu ou inicio)
+    if (['oi', 'olá', 'ola', 'menu', 'inicio', 'início'].includes(texto)) {
+        const menu = `🤖 *Atendimento Automático*\n\n` +
+                     `Escolha uma das opções abaixo digitando apenas o número:\n\n` +
+                     `1️⃣ Redes Sociais\n` +
+                     `2️⃣ Horário de Atendimento\n` +
+                     `3️⃣ Deixar um Recado\n` +
+                     `4️⃣ Baixar PDF\n`;
+        await msg.reply(menu);
+        return;
+    }
 
-                await sock.sendMessage(from, { text: `⏰ *Lembrete agendado!* \nDaqui a *\${minutos} minutos* te aviso sobre: _"\${tarefa}"_` });
+    // Opção 1: Redes Sociais
+    if (texto === '1') {
+        await msg.reply('📱 *Nossas Redes Sociais:*\n\n• Instagram: @seu_usuario\n• Facebook: /sua_pagina\n• Site: www.seusite.com');
+    } 
+    // Opção 2: Horário de Atendimento
+    else if (texto === '2') {
+        await msg.reply('⏰ *Horário de Atendimento:*\n\nAtendemos de Segunda a Sexta, das 08h às 18h.');
+    } 
+    // Opção 3: Deixar Recado
+    else if (texto === '3') {
+        await msg.reply('📝 Por favor, digite o seu recado aqui abaixo. Um dos nossos atendentes responderá assim que possível!');
+    } 
+    // Opção 4: Envio de PDF
+    else if (texto === '4') {
+        // Nome do arquivo PDF localizado na mesma pasta do index.js
+        const pdfName = 'documento.pdf';
+        const pdfPath = path.join(__dirname, pdfName);
 
-                setTimeout(async () => {
-                    await sock.sendMessage(from, { text: `🔔 *ALERTA, DANIEL!* \n\nEstá na hora de:\n👉 *\${tarefa}*` });
-                }, minutos * 60 * 1000);
-                
-                return;
+        if (fs.existsSync(pdfPath)) {
+            try {
+                await msg.reply('Aguarde um instante, estou enviando o arquivo...');
+                const media = MessageMedia.fromFilePath(pdfPath);
+                await client.sendMessage(msg.from, media, { caption: '📄 Aqui está o seu PDF!' });
+                console.log(`[LOG] PDF enviado com sucesso para ${msg.from}`);
+            } catch (err) {
+                console.error('[ERRO] Falha ao enviar o arquivo PDF:', err);
+                await msg.reply('Ocorreu um erro ao tentar enviar o arquivo PDF.');
             }
-
-            // 2. Menu Inicial (Se saudar com Oi, Olá, etc.)
-            if (['oi', 'olá', 'ola', 'bom dia', 'boa tarde', 'boa noite'].includes(inputLower)) {
-                const menu = `Olá! Eu sou o assistente virtual do Daniel Moreira Candinho. Escolha uma das opções digitando o número correspondente:\n\n1. Redes Sociais 🌐\n2. Horário de Atendimento ⏰\n3. Deixar um Recado 📝\n4. Receber arquivo PDF 📄\n\n💡 *Dica:* Para criar um alerta, use:\n\`!lembrar 5 Fazer o teste do bot\``;
-                await sock.sendMessage(from, { text: menu });
-                return;
-            } 
-
-            // 3. Opções do Menu (1, 2, 3 ou 4)
-            if (inputLower === '1') {
-                await sock.sendMessage(from, { text: `Aqui estão as minhas redes sociais:\n• Instagram: ://instagram.com\n• GitHub: ://github.com` });
-            } else if (inputLower === '2') {
-                await sock.sendMessage(from, { text: `Meu horário de atendimento é das 10h às 17h horas. ⏰` });
-            } else if (inputLower === '3') {
-                await sock.sendMessage(from, { text: `Pode digitar o seu recado aqui embaixo! Assim que eu visualizar, eu te respondo. 📝` });
-            } else if (inputLower === '4') {
-                // Mensagem de aviso antes de mandar o arquivo
-                await sock.sendMessage(from, { text: `Estou preparando o seu documento... Um segundo! ⏳` });
-                
-                // COMANDO QUE ENVIA O PDF DE VERDADE
-                await sock.sendMessage(from, { 
-                    document: { url: "https://w3.org" }, 
-                    mimetype: "application/pdf", 
-                    fileName: "Documento_Daniel.pdf" 
-                });
-            } 
-            // 4. Se for qualquer texto aleatório que não seja comando ou número
-            else {
-                await sock.sendMessage(from, { text: `Opção inválida. ❌\nPor favor, digite 1, 2, 3 ou 4, ou envie "Oi" para ver o menu.` });
-            }
+        } else {
+            await msg.reply('⚠️ O arquivo PDF não foi encontrado no sistema.');
+            console.log(`[ERRO] O arquivo "${pdfName}" não foi encontrado na raiz do projeto.`);
         }
-    });
-}
+    }
+});
 
-connectToWhatsApp();
+// Inicializa o bot
+client.initialize();
